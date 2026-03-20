@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "@rolldown/binding-darwin-arm64": "^1.0.0-rc.10",
+    "vercel": "^50.34.2",
     "vite": "^8.0.1"
   },
   "dependencies": {

@@ -183,6 +183,13 @@ h1 {
   color: var(--text);
 }
 
+#country-population,
+#detail-country-population,
+#country-updated,
+#detail-country-updated {
+  color: #f8fbff;
+}
+
 .focus-current-btn {
   margin-top: 12px;
   width: 100%;
