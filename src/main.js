@@ -478,38 +478,6 @@ const selectedMarker = new THREE.Mesh(
 selectedMarker.visible = false;
 scene.add(selectedMarker);
 
-const currentLocationMarker = new THREE.Group();
-const currentLocationRing = new THREE.Mesh(
-  new THREE.RingGeometry(0.06, 0.1, 64),
-  new THREE.MeshBasicMaterial({
-    color: 0x6fd8ff,
-    transparent: true,
-    opacity: 0.92,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  }),
-);
-const currentLocationDot = new THREE.Mesh(
-  new THREE.SphereGeometry(0.02, 16, 16),
-  new THREE.MeshBasicMaterial({
-    color: 0xb7f3ff,
-  }),
-);
-const currentLocationHitArea = new THREE.Mesh(
-  new THREE.SphereGeometry(0.12, 12, 12),
-  new THREE.MeshBasicMaterial({
-    transparent: true,
-    opacity: 0.001,
-    depthWrite: false,
-  }),
-);
-currentLocationMarker.add(currentLocationRing);
-currentLocationMarker.add(currentLocationDot);
-currentLocationMarker.add(currentLocationHitArea);
-currentLocationMarker.visible = false;
-scene.add(currentLocationMarker);
-
 function setSelectedCountry(country) {
   selectedCountry = country;
   if (!country) {
@@ -544,32 +512,20 @@ function refreshCurrentLocationCountry() {
   );
 }
 
-function updateCurrentLocationMarker() {
-  if (
-    currentLocation.status !== "ready" ||
-    currentLocation.latitude === null ||
-    currentLocation.longitude === null
-  ) {
-    currentLocationMarker.visible = false;
-    return;
-  }
-
-  const markerPos = latLonToVector3(
-    currentLocation.latitude,
-    currentLocation.longitude,
-    1.88,
-  );
-  currentLocationMarker.position.copy(markerPos);
-  currentLocationMarker.visible = true;
-}
-
-function isPointerOnCurrentLocationMarker(clientX, clientY) {
-  if (!currentLocationMarker.visible) return false;
+function getLatLonFromPointer(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  return raycaster.intersectObject(currentLocationHitArea, false).length > 0;
+
+  const intersection = raycaster.intersectObject(earth, false)[0];
+  if (!intersection) return null;
+
+  const localPoint = earth.worldToLocal(intersection.point.clone()).normalize();
+  return {
+    lon: THREE.MathUtils.radToDeg(Math.atan2(-localPoint.z, localPoint.x)),
+    lat: THREE.MathUtils.radToDeg(Math.asin(localPoint.y)),
+  };
 }
 
 function updateCurrentLocationPanel(now = new Date()) {
@@ -580,7 +536,6 @@ function updateCurrentLocationPanel(now = new Date()) {
     countryDaylightEl.className = "status neutral";
     countryUpdatedEl.textContent = "Vị trí: -";
     focusCurrentBtnEl.disabled = true;
-    updateCurrentLocationMarker();
     return;
   }
 
@@ -598,7 +553,6 @@ function updateCurrentLocationPanel(now = new Date()) {
     countryDaylightEl.className = "status neutral";
     countryUpdatedEl.textContent = "Vị trí: -";
     focusCurrentBtnEl.disabled = true;
-    updateCurrentLocationMarker();
     return;
   }
 
@@ -615,7 +569,6 @@ function updateCurrentLocationPanel(now = new Date()) {
   countryDaylightEl.className = `status ${isDay ? "day" : "night"}`;
   countryUpdatedEl.textContent = `Vị trí: ${latitude.toFixed(3)}, ${longitude.toFixed(3)} | Local: ${localTime} (${tzOffset})`;
   focusCurrentBtnEl.disabled = false;
-  updateCurrentLocationMarker();
 }
 
 function handleLocationSuccess(position) {
@@ -666,19 +619,8 @@ function startFocusTransition(targetPosition, targetLookAt) {
   controls.enabled = false;
 }
 
-function focusCurrentLocation() {
-  if (
-    currentLocation.latitude === null ||
-    currentLocation.longitude === null
-  ) {
-    return;
-  }
-
-  const direction = latLonToVector3(
-    currentLocation.latitude,
-    currentLocation.longitude,
-    1,
-  ).normalize();
+function focusLatLon(lat, lon, { closeDetail = true } = {}) {
+  const direction = latLonToVector3(lat, lon, 1).normalize();
   const distance = THREE.MathUtils.clamp(
     camera.position.distanceTo(controls.target),
     3.2,
@@ -687,8 +629,30 @@ function focusCurrentLocation() {
   const targetPosition = direction.multiplyScalar(distance);
   const targetLookAt = new THREE.Vector3(0, 0, 0);
   params.autoRotate = false;
-  closeCountryDetail();
+  if (closeDetail) closeCountryDetail();
   startFocusTransition(targetPosition, targetLookAt);
+}
+
+function focusCurrentLocation(options = {}) {
+  if (
+    currentLocation.latitude === null ||
+    currentLocation.longitude === null
+  ) {
+    return;
+  }
+  focusLatLon(currentLocation.latitude, currentLocation.longitude, options);
+}
+
+function focusCountry(country, options = {}) {
+  if (!country) return;
+  focusLatLon(country.center.lat, country.center.lon, options);
+}
+
+function focusAndOpenCurrentCountry() {
+  if (!currentLocation.country) return;
+  setSelectedCountry(currentLocation.country);
+  openCountryDetail(currentLocation.country);
+  focusCountry(currentLocation.country, { closeDetail: false });
 }
 
 function setDetailOpen(open) {
@@ -812,17 +776,9 @@ async function loadCountries() {
 }
 
 function pickCountryByPointer(clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
-  pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(pointer, camera);
-
-  const intersection = raycaster.intersectObject(earth, false)[0];
-  if (!intersection) return null;
-
-  const localPoint = earth.worldToLocal(intersection.point.clone()).normalize();
-  const lon = THREE.MathUtils.radToDeg(Math.atan2(-localPoint.z, localPoint.x));
-  const lat = THREE.MathUtils.radToDeg(Math.asin(localPoint.y));
+  const hit = getLatLonFromPointer(clientX, clientY);
+  if (!hit) return null;
+  const { lon, lat } = hit;
 
   for (const country of countries) {
     if (pointInCountry(country, lon, lat)) return country;
@@ -852,11 +808,8 @@ canvas.addEventListener("pointerup", (event) => {
   dragState.active = false;
   if (dragState.moved) return;
 
-  if (isPointerOnCurrentLocationMarker(event.clientX, event.clientY)) {
-    if (currentLocation.country) {
-      setSelectedCountry(currentLocation.country);
-    }
-    focusCurrentLocation();
+  if (app.classList.contains("detail-open")) {
+    closeCountryDetail();
     return;
   }
 
@@ -864,6 +817,7 @@ canvas.addEventListener("pointerup", (event) => {
   setSelectedCountry(country);
   if (selectedCountry) {
     openCountryDetail(selectedCountry);
+    focusCountry(selectedCountry, { closeDetail: false });
     return;
   }
   closeCountryDetail();
@@ -879,7 +833,16 @@ detailCloseEl.addEventListener("click", () => {
 });
 
 focusCurrentBtnEl.addEventListener("click", () => {
-  focusCurrentLocation();
+  focusAndOpenCurrentCountry();
+});
+
+app.addEventListener("pointerup", (event) => {
+  if (!app.classList.contains("detail-open")) return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (countryDetailEl.contains(target)) return;
+  if (target.closest(".webgl")) return;
+  closeCountryDetail();
 });
 
 function tick() {
@@ -897,13 +860,6 @@ function tick() {
   controls.autoRotateSpeed = params.rotateSpeed;
   stars.rotation.y = elapsed * 0.01;
   updateCurrentLocationPanel(now);
-
-  if (currentLocationMarker.visible) {
-    currentLocationRing.quaternion.copy(camera.quaternion);
-    const pulse = 1 + 0.22 * (0.5 + 0.5 * Math.sin(elapsed * 3.3));
-    currentLocationRing.scale.setScalar(pulse);
-    currentLocationDot.scale.setScalar(0.9 + 0.15 * (0.5 + 0.5 * Math.sin(elapsed * 4.7)));
-  }
 
   if (focusAnimation.active) {
     const progress = Math.min(
