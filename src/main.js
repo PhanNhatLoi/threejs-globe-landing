@@ -151,6 +151,8 @@ const focusAnimation = {
   fromTarget: new THREE.Vector3(),
   toTarget: new THREE.Vector3(),
 };
+const FOCUS_DISTANCE = 4.2;
+let suppressMapAutoOpenUntil = 0;
 const mapState = {
   active: false,
   loading: false,
@@ -749,17 +751,18 @@ function startFocusTransition(targetPosition, targetLookAt) {
   controls.enabled = false;
 }
 
-function focusLatLon(lat, lon, { closeDetail = true } = {}) {
+function focusLatLon(lat, lon, { closeDetail = true, distance } = {}) {
   const direction = latLonToVector3(lat, lon, 1).normalize();
-  const distance = THREE.MathUtils.clamp(
-    camera.position.distanceTo(controls.target),
+  const targetDistance = THREE.MathUtils.clamp(
+    distance ?? FOCUS_DISTANCE,
     3.2,
-    4.6,
+    4.8,
   );
-  const targetPosition = direction.multiplyScalar(distance);
+  const targetPosition = direction.multiplyScalar(targetDistance);
   const targetLookAt = new THREE.Vector3(0, 0, 0);
   params.autoRotate = false;
   if (closeDetail) closeCountryDetail();
+  suppressMapAutoOpenUntil = performance.now() + focusAnimation.duration + 250;
   startFocusTransition(targetPosition, targetLookAt);
 }
 
@@ -767,12 +770,18 @@ function focusCurrentLocation(options = {}) {
   if (currentLocation.latitude === null || currentLocation.longitude === null) {
     return;
   }
-  focusLatLon(currentLocation.latitude, currentLocation.longitude, options);
+  focusLatLon(currentLocation.latitude, currentLocation.longitude, {
+    distance: FOCUS_DISTANCE,
+    ...options,
+  });
 }
 
 function focusCountry(country, options = {}) {
   if (!country) return;
-  focusLatLon(country.center.lat, country.center.lon, options);
+  focusLatLon(country.center.lat, country.center.lon, {
+    distance: FOCUS_DISTANCE,
+    ...options,
+  });
 }
 
 function focusAndOpenCurrentCountry() {
@@ -1060,6 +1069,7 @@ window.addEventListener("resize", () => {
 
 controls.addEventListener("change", () => {
   if (mapState.active || mapState.loading) return;
+  if (performance.now() < suppressMapAutoOpenUntil) return;
   const distance = camera.position.distanceTo(controls.target);
   if (distance <= controls.minDistance + 0.02) {
     openMapAtCurrentView();
