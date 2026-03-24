@@ -2,6 +2,8 @@ import "./style.css";
 import * as THREE from "three";
 import GUI from "lil-gui";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 const app = document.querySelector("#app");
 
@@ -32,6 +34,9 @@ app.innerHTML = `
     <p id="detail-country-daylight" class="status neutral">Trạng thái: -</p>
     <p id="detail-country-updated" class="updated-at">UTC: -</p>
   </section>
+  <section class="map-overlay" id="map-overlay" aria-hidden="true">
+    <div class="map-canvas" id="leaflet-map" aria-label="Leaflet Map"></div>
+  </section>
   <canvas class="webgl" aria-label="Interactive 3D Earth"></canvas>
 `;
 
@@ -54,6 +59,8 @@ const detailCountryUpdatedEl = document.querySelector(
   "#detail-country-updated",
 );
 const countryMapEl = document.querySelector("#country-map");
+const mapOverlayEl = document.querySelector("#map-overlay");
+const mapCanvasEl = document.querySelector("#leaflet-map");
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x050b18, 18, 50);
@@ -143,6 +150,17 @@ const focusAnimation = {
   toPosition: new THREE.Vector3(),
   fromTarget: new THREE.Vector3(),
   toTarget: new THREE.Vector3(),
+};
+const FOCUS_DISTANCE = 4.2;
+let suppressMapAutoOpenUntil = 0;
+const mapState = {
+  active: false,
+  loading: false,
+  map: null,
+  tileLayer: null,
+  bindingsReady: false,
+  center: { lat: 0, lon: 0 },
+  prewarmed: false,
 };
 
 const earthGeometry = new THREE.SphereGeometry(1.8, 160, 160);
@@ -528,6 +546,118 @@ function getLatLonFromPointer(clientX, clientY) {
   };
 }
 
+function getLatLonFromCameraCenter() {
+  const origin = camera.position.clone();
+  const direction = new THREE.Vector3();
+  camera.getWorldDirection(direction).normalize();
+  const radius = 1.8;
+
+  const b = 2 * origin.dot(direction);
+  const c = origin.dot(origin) - radius * radius;
+  const disc = b * b - 4 * c;
+  if (disc < 0) return null;
+  const t = (-b - Math.sqrt(disc)) / 2;
+  if (!Number.isFinite(t) || t <= 0) return null;
+  const hit = origin.add(direction.multiplyScalar(t)).normalize();
+
+  return {
+    lon: THREE.MathUtils.radToDeg(Math.atan2(-hit.z, hit.x)),
+    lat: THREE.MathUtils.radToDeg(Math.asin(hit.y)),
+  };
+}
+
+function computeLeafletZoom(distance) {
+  const minDistance = controls.minDistance;
+  const maxDistance = controls.maxDistance;
+  const t = THREE.MathUtils.clamp(
+    (distance - minDistance) / (maxDistance - minDistance),
+    0,
+    1,
+  );
+  return Math.round(THREE.MathUtils.lerp(6, 2, t));
+}
+
+function setMapOpen(open) {
+  mapOverlayEl.setAttribute("aria-hidden", String(!open));
+  mapOverlayEl.classList.toggle("is-visible", open);
+  app.classList.toggle("map-open", open);
+}
+
+function initLeafletMap() {
+  if (mapState.map || mapState.loading) return;
+  mapState.loading = true;
+  mapState.map = L.map(mapCanvasEl, {
+    zoomControl: false,
+    attributionControl: true,
+    inertia: true,
+    zoomSnap: 1,
+    wheelPxPerZoomLevel: 90,
+    updateWhenIdle: true,
+    updateWhenZooming: false,
+    keepBuffer: 6,
+  });
+  mapState.tileLayer = L.tileLayer(
+    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors",
+    },
+  );
+  mapState.tileLayer.addTo(mapState.map);
+  mapState.map.setView([0, 0], 0, { animate: false });
+  mapState.loading = false;
+}
+
+function openMapAtCurrentView() {
+  if (mapState.active || mapState.loading) return;
+  initLeafletMap();
+  if (!mapState.map) return;
+  params.autoRotate = false;
+  controls.autoRotate = false;
+  controls.enabled = false;
+  closeCountryDetail();
+
+  const focusPoint = getLatLonFromCameraCenter() || { lat: 0, lon: 0 };
+  const distance = camera.position.distanceTo(controls.target);
+  const zoom = computeLeafletZoom(distance);
+  mapState.center = focusPoint;
+  mapState.map.setView([focusPoint.lat, focusPoint.lon], zoom, {
+    animate: false,
+  });
+
+  setMapOpen(true);
+  requestAnimationFrame(() => {
+    mapState.map.invalidateSize();
+  });
+  mapState.active = true;
+
+  if (!mapState.bindingsReady) {
+    mapState.map.on("moveend", () => {
+      const center = mapState.map.getCenter();
+      mapState.center = { lat: center.lat, lon: center.lng };
+    });
+    mapState.map.on("zoomend", () => {
+      if (!mapState.active) return;
+      if (mapState.map.getZoom() <= 5) {
+        closeMapOverlay();
+      }
+    });
+    mapState.bindingsReady = true;
+  }
+}
+
+function closeMapOverlay() {
+  if (!mapState.active) return;
+  mapState.active = false;
+  setMapOpen(false);
+  controls.enabled = true;
+  if (mapState.center) {
+    focusLatLon(mapState.center.lat, mapState.center.lon, {
+      closeDetail: true,
+    });
+  }
+}
+
 function updateCurrentLocationPanel(now = new Date()) {
   if (currentLocation.status === "requesting") {
     countryNameEl.textContent = "Đang xin quyền vị trí...";
@@ -563,7 +693,9 @@ function updateCurrentLocationPanel(now = new Date()) {
   const localTime = formatLocalDateTime(now);
   const tzOffset = formatTimezoneOffset(now.getTimezoneOffset());
 
-  countryNameEl.textContent = country ? country.name : "Không xác định quốc gia";
+  countryNameEl.textContent = country
+    ? country.name
+    : "Không xác định quốc gia";
   countryPopulationEl.textContent = `Dân số: ${country ? formatPopulation(country.population) : "-"}`;
   countryDaylightEl.textContent = `Trạng thái: ${isDay ? "Ban ngày" : "Ban đêm"}`;
   countryDaylightEl.className = `status ${isDay ? "day" : "night"}`;
@@ -619,33 +751,37 @@ function startFocusTransition(targetPosition, targetLookAt) {
   controls.enabled = false;
 }
 
-function focusLatLon(lat, lon, { closeDetail = true } = {}) {
+function focusLatLon(lat, lon, { closeDetail = true, distance } = {}) {
   const direction = latLonToVector3(lat, lon, 1).normalize();
-  const distance = THREE.MathUtils.clamp(
-    camera.position.distanceTo(controls.target),
+  const targetDistance = THREE.MathUtils.clamp(
+    distance ?? FOCUS_DISTANCE,
     3.2,
-    4.6,
+    4.8,
   );
-  const targetPosition = direction.multiplyScalar(distance);
+  const targetPosition = direction.multiplyScalar(targetDistance);
   const targetLookAt = new THREE.Vector3(0, 0, 0);
   params.autoRotate = false;
   if (closeDetail) closeCountryDetail();
+  suppressMapAutoOpenUntil = performance.now() + focusAnimation.duration + 250;
   startFocusTransition(targetPosition, targetLookAt);
 }
 
 function focusCurrentLocation(options = {}) {
-  if (
-    currentLocation.latitude === null ||
-    currentLocation.longitude === null
-  ) {
+  if (currentLocation.latitude === null || currentLocation.longitude === null) {
     return;
   }
-  focusLatLon(currentLocation.latitude, currentLocation.longitude, options);
+  focusLatLon(currentLocation.latitude, currentLocation.longitude, {
+    distance: FOCUS_DISTANCE,
+    ...options,
+  });
 }
 
 function focusCountry(country, options = {}) {
   if (!country) return;
-  focusLatLon(country.center.lat, country.center.lon, options);
+  focusLatLon(country.center.lat, country.center.lon, {
+    distance: FOCUS_DISTANCE,
+    ...options,
+  });
 }
 
 function focusAndOpenCurrentCountry() {
@@ -906,6 +1042,22 @@ loadCountries()
     setDetailOpen(false);
     requestCurrentLocation();
     tick();
+    const idle =
+      window.requestIdleCallback ||
+      ((callback) => window.setTimeout(callback, 800));
+    idle(() => {
+      initLeafletMap();
+      if (mapState.map && !mapState.prewarmed) {
+        const focusPoint = getLatLonFromCameraCenter() || { lat: 0, lon: 0 };
+        const distance = camera.position.distanceTo(controls.target);
+        const zoom = computeLeafletZoom(distance);
+        mapState.map.setView([focusPoint.lat, focusPoint.lon], zoom, {
+          animate: false,
+        });
+        mapState.map.invalidateSize();
+        mapState.prewarmed = true;
+      }
+    });
   });
 
 window.addEventListener("resize", () => {
@@ -913,4 +1065,13 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3));
+});
+
+controls.addEventListener("change", () => {
+  if (mapState.active || mapState.loading) return;
+  if (performance.now() < suppressMapAutoOpenUntil) return;
+  const distance = camera.position.distanceTo(controls.target);
+  if (distance <= controls.minDistance + 0.02) {
+    openMapAtCurrentView();
+  }
 });

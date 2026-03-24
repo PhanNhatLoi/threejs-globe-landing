@@ -42,6 +42,37 @@ body {
   transform-origin: center center;
 }
 
+.map-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 320ms ease;
+}
+
+.map-overlay.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.map-canvas {
+  flex: 1;
+  margin: 0;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.map-open .webgl {
+  filter: blur(1.5px) saturate(0.9);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 .hero-copy {
   position: fixed;
   top: clamp(20px, 4vw, 42px);
@@ -272,6 +303,14 @@ h1 {
   filter: saturate(1.08);
 }
 
+#app.map-open .hero-copy,
+#app.map-open .country-info,
+#app.map-open .country-detail,
+#app.map-open .lil-gui {
+  opacity: 0;
+  pointer-events: none;
+}
+
 #app.detail-open .country-detail {
   opacity: 1;
   visibility: visible;
@@ -326,5 +365,9 @@ h1 {
 
   #app.detail-open .webgl {
     transform: translateX(-10vw) scale(1.03);
+  }
+
+  .map-overlay {
+    padding: 0;
   }
 }
